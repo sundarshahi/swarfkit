@@ -38,13 +38,14 @@ describe("listWorktrees", () => {
     const wts = await listWorktrees(fx.root, fx.root);
     // Resolve both paths canonically for comparison (handles /var vs /private/var)
     const expectedPath = await realpath(a);
-    for (const w of wts) {
-      const resolved = await realpath(w.path).catch(() => w.path);
-      if (resolved === expectedPath) {
-        expect(w.branch).toBeNull();
-        break;
-      }
-    }
+    const resolvedWts = await Promise.all(
+      wts.map(async (w) => ({
+        ...w,
+        resolvedPath: await realpath(w.path).catch(() => w.path),
+      }))
+    );
+    const detached = resolvedWts.find((w) => w.resolvedPath === expectedPath);
+    expect(detached?.branch).toBeNull();
     await fx.cleanup();
   });
 });
