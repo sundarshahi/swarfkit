@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   artifactBytes, formatBytes, renderTable, renderJson, reclaimableBytes, treeBytes,
+  suggestNextStep,
 } from "../src/render";
 import type { Row } from "../src/types";
 
@@ -86,6 +87,123 @@ describe("renderTable", () => {
 
   test("reports an empty result set explicitly", () => {
     expect(renderTable([])).toContain("No worktrees found");
+  });
+
+  test("case 2: repos found but none has a linked worktree — not an error", () => {
+    const mainOnly = row({
+      worktree: { ...row().worktree, isMain: true },
+      verdict: { safety: "blocked", reasons: ["is the main worktree"] },
+    });
+    const out = renderTable([mainOnly]);
+    expect(out).toContain("No linked worktrees");
+    expect(out).not.toContain("No worktrees found");
+  });
+
+  test("case 3: worktrees found, but nothing is reclaimable", () => {
+    const nothing = row({
+      verdict: { safety: "blocked", reasons: ["has uncommitted changes"] },
+      sizes: { total: 0, artifacts: [] },
+    });
+    const out = renderTable([nothing]);
+    expect(out).toContain("nothing reclaimable");
+  });
+
+  test("the four empty/near-empty report states each render distinct copy", () => {
+    const noRepo = renderTable([]);
+    const mainOnly = renderTable([
+      row({
+        worktree: { ...row().worktree, isMain: true },
+        verdict: { safety: "blocked", reasons: ["is the main worktree"] },
+      }),
+    ]);
+    const nothingReclaimable = renderTable([
+      row({ verdict: { safety: "blocked", reasons: ["x"] }, sizes: { total: 0, artifacts: [] } }),
+    ]);
+    const hasData = renderTable([row()]);
+    expect(new Set([noRepo, mainOnly, nothingReclaimable, hasData]).size).toBe(4);
+  });
+
+  test("truncates an absurdly long branch name with a visible ellipsis, keeping columns aligned", () => {
+    const longName = `feature/${"x".repeat(80)}`;
+    const long = row({ worktree: { ...row().worktree, branch: longName } });
+    const short = row({
+      worktree: { ...row().worktree, path: "/tmp/wt-b", branch: "short" },
+      sizes: { total: 10, artifacts: [] },
+    });
+    const out = renderTable([long, short]);
+
+    expect(out).not.toContain(longName);
+    expect(out).toContain("…");
+
+    const dataLines = out
+      .split("\n")
+      .filter((l) => l.includes("safe") && !l.includes("reclaimable") && !l.startsWith("Run "));
+    expect(dataLines.length).toBe(2);
+    const offsets = dataLines.map((l) => l.indexOf("safe"));
+    expect(new Set(offsets).size).toBe(1); // both VERDICT columns start at the same offset
+  });
+
+  test("--json keeps the untruncated branch name even when the table would truncate it", () => {
+    const longName = `feature/${"x".repeat(80)}`;
+    const long = row({ worktree: { ...row().worktree, branch: longName } });
+    const parsed = JSON.parse(renderJson([long]));
+    expect(parsed.worktrees[0].branch).toBe(longName);
+  });
+
+  describe("color", () => {
+    test("emits ANSI escapes when explicitly enabled", () => {
+      expect(renderTable([row()], { color: true })).toContain("\x1b[");
+    });
+
+    test("emits no ANSI escapes by default", () => {
+      expect(renderTable([row()])).not.toContain("\x1b");
+    });
+
+    test("emits no ANSI escapes when explicitly disabled", () => {
+      expect(renderTable([row()], { color: false })).not.toContain("\x1b");
+    });
+
+    test("the literal verdict words survive with color stripped", () => {
+      // Color is an enhancement, never the only signal — the word must be
+      // there in plain monochrome output too.
+      const blocked = row({ verdict: { safety: "blocked", reasons: ["has uncommitted changes"] } });
+      expect(renderTable([blocked])).toContain("blocked");
+      expect(renderTable([blocked], { color: true })).toContain("blocked");
+    });
+  });
+
+  describe("renderJson never decorates", () => {
+    test("no ANSI escapes appear in JSON output, ever", () => {
+      expect(renderJson([row()])).not.toContain("\x1b");
+    });
+  });
+});
+
+describe("suggestNextStep", () => {
+  test("suggests prune and quotes prune's own reclaim figure when a safe worktree exists", () => {
+    const safe = row(); // safe, treeBytes 2_000_000
+    const suggestion = suggestNextStep([safe]);
+    expect(suggestion).toContain("swarf prune");
+    expect(suggestion).toContain(formatBytes(treeBytes(safe)));
+  });
+
+  test("suggests clean and quotes clean's own reclaim figure when nothing is prunable", () => {
+    const blocked = row({ verdict: { safety: "blocked", reasons: ["has uncommitted changes"] } });
+    const suggestion = suggestNextStep([blocked]);
+    expect(suggestion).toContain("swarf clean");
+    expect(suggestion).toContain(formatBytes(artifactBytes(blocked)));
+  });
+
+  test("returns null when neither command has anything to do", () => {
+    const nothing = row({
+      verdict: { safety: "blocked", reasons: ["x"] },
+      sizes: { total: 0, artifacts: [] },
+    });
+    expect(suggestNextStep([nothing])).toBeNull();
+  });
+
+  test("renderTable appends the suggestion after the summary line", () => {
+    expect(renderTable([row()])).toContain("Run `swarf prune`");
   });
 });
 

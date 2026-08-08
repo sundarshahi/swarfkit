@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { makeRepo } from "./fixtures";
-import { parseArgs, parseDuration, run } from "../src/cli";
+import { parseArgs, parseDuration, run, withProgress, type Io } from "../src/cli";
 
 const DAY = 86_400;
 
@@ -355,5 +355,148 @@ describe("run", () => {
     const { io: i, err } = io("/");
     expect(await run([], i)).toBe(2);
     expect(err.join("\n")).toContain("--root");
+  });
+
+  describe("empty-state 4: rows exist but nothing qualifies for this verb", () => {
+    test("clean names the specific reason: no build artifacts", async () => {
+      const fx = await makeRepo();
+      await fx.addWorktree({ name: "alpha" }); // no artifacts added
+      const { io: i, out } = io(fx.root);
+      const code = await run(["clean", "--root", fx.root], i);
+      expect(code).toBe(0);
+      expect(out.join("\n")).toContain("No build artifacts found to clean.");
+      await fx.cleanup();
+    });
+
+    test("prune names the specific reason: nothing currently qualifies", async () => {
+      const fx = await makeRepo();
+      // Never merged into trunk => blocked, never a prune candidate regardless of age.
+      await fx.addWorktree({ name: "open", merge: "none", ageSeconds: 30 * DAY });
+      const { io: i, out } = io(fx.root);
+      const code = await run(["prune", "--root", fx.root], i);
+      expect(code).toBe(0);
+      expect(out.join("\n")).toContain("No worktrees currently qualify for pruning");
+      await fx.cleanup();
+    });
+
+    test("the clean and prune empty-state messages are distinct from each other", async () => {
+      const fxA = await makeRepo();
+      await fxA.addWorktree({ name: "alpha" });
+      const a = io(fxA.root);
+      await run(["clean", "--root", fxA.root], a.io);
+
+      const fxB = await makeRepo();
+      await fxB.addWorktree({ name: "open", merge: "none", ageSeconds: 30 * DAY });
+      const b = io(fxB.root);
+      await run(["prune", "--root", fxB.root], b.io);
+
+      expect(a.out.join("\n")).not.toBe(b.out.join("\n"));
+      await fxA.cleanup();
+      await fxB.cleanup();
+    });
+  });
+
+  describe("the next-step suggestion quotes the same number the named command actually reclaims", () => {
+    test("suggests prune and its figure matches prune's own result", async () => {
+      const fx = await makeRepo();
+      const wt = await fx.addWorktree({ name: "done", merge: "squash", ageSeconds: 30 * DAY });
+      await fx.addArtifacts(wt, "node_modules", 2_000_000);
+      await fx.addArtifacts(wt, "logs", 20_000_000); // bulk only the whole-tree (prune) figure counts
+
+      const report = io(fx.root);
+      await run(["--root", fx.root], report.io);
+      const reportText = report.out.join("\n");
+      expect(reportText).toContain("Run `swarf prune`");
+      const suggested = size(reportText.split("Run `swarf prune`")[1] ?? "");
+      expect(suggested).not.toBe("");
+
+      const acted = io(fx.root, true);
+      await run(["prune", "--root", fx.root], acted.io);
+      const actual = size(acted.out.find((l) => l.startsWith("Reclaimed")) ?? "");
+      expect(suggested).toBe(actual);
+      await fx.cleanup();
+    });
+
+    test("suggests clean and its figure matches clean's own result", async () => {
+      const fx = await makeRepo();
+      // Never merged => not a prune candidate; only clean has anything to do.
+      const wt = await fx.addWorktree({ name: "open", merge: "none", ageSeconds: 30 * DAY });
+      await fx.addArtifacts(wt, "node_modules", 4096);
+
+      const report = io(fx.root);
+      await run(["--root", fx.root], report.io);
+      const reportText = report.out.join("\n");
+      expect(reportText).toContain("Run `swarf clean`");
+      const suggested = size(reportText.split("Run `swarf clean`")[1] ?? "");
+      expect(suggested).not.toBe("");
+
+      const acted = io(fx.root, true);
+      await run(["clean", "--root", fx.root], acted.io);
+      const actual = size(acted.out.find((l) => l.startsWith("Reclaimed")) ?? "");
+      expect(suggested).toBe(actual);
+      await fx.cleanup();
+    });
+  });
+
+  describe("color plumbing", () => {
+    test("io.color: true reaches the rendered report", async () => {
+      const fx = await makeRepo();
+      await fx.addWorktree({ name: "done", merge: "squash", ageSeconds: 30 * DAY });
+      const { io: i, out } = io(fx.root);
+      await run(["--root", fx.root], { ...i, color: true });
+      expect(out.join("\n")).toContain("\x1b[");
+      await fx.cleanup();
+    });
+
+    test("no color by default, matching a non-TTY Io double", async () => {
+      const fx = await makeRepo();
+      await fx.addWorktree({ name: "done", merge: "squash", ageSeconds: 30 * DAY });
+      const { io: i, out } = io(fx.root);
+      await run(["--root", fx.root], i);
+      expect(out.join("\n")).not.toContain("\x1b");
+      await fx.cleanup();
+    });
+
+    test("--json is never colored, even with io.color: true", async () => {
+      const fx = await makeRepo();
+      await fx.addWorktree({ name: "done", merge: "squash", ageSeconds: 30 * DAY });
+      const { io: i, out } = io(fx.root);
+      await run(["--root", fx.root, "--json"], { ...i, color: true });
+      expect(out.join("\n")).not.toContain("\x1b");
+      await fx.cleanup();
+    });
+  });
+});
+
+describe("withProgress", () => {
+  function fakeIo(events: (string | null)[]): Io {
+    return {
+      cwd: "/",
+      out: () => {},
+      err: () => {},
+      confirm: async () => false,
+      progress: (s) => events.push(s),
+    };
+  }
+
+  test("shows the label only once the delay elapses, then clears it", async () => {
+    const events: (string | null)[] = [];
+    const slow = new Promise<string>((resolve) => setTimeout(() => resolve("done"), 30));
+    const result = await withProgress(fakeIo(events), slow, "scanning…", 10);
+    expect(result).toBe("done");
+    expect(events).toEqual(["scanning…", null]);
+  });
+
+  test("shows nothing when the work finishes before the delay", async () => {
+    const events: (string | null)[] = [];
+    const result = await withProgress(fakeIo(events), Promise.resolve("fast"), "scanning…", 50);
+    expect(result).toBe("fast");
+    expect(events).toEqual([]);
+  });
+
+  test("is a no-op when io.progress is absent (stderr not a TTY)", async () => {
+    const io: Io = { cwd: "/", out: () => {}, err: () => {}, confirm: async () => false };
+    const result = await withProgress(io, Promise.resolve(42));
+    expect(result).toBe(42);
   });
 });

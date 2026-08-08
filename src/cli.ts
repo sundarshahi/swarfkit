@@ -25,7 +25,45 @@ export type Io = {
   out(s: string): void;
   err(s: string): void;
   confirm(question: string): Promise<boolean>;
+  /** Emit ANSI color in report output. Omit or set false for plain output. */
+  color?: boolean;
+  /**
+   * TTY-only progress indicator on stderr. Call with a label to show/update
+   * it, `null` to clear it. Omit entirely when stderr is not a TTY — the
+   * scan must stay silent rather than spam a log file.
+   */
+  progress?(s: string | null): void;
 };
+
+/** A scan taking this long or more gets a progress line; see `withProgress`. */
+export const PROGRESS_DELAY_MS = 400;
+
+/**
+ * Runs `work`, and if it hasn't settled within `delayMs`, shows `label` via
+ * `io.progress` until it does. A no-op when `io.progress` is absent (stderr
+ * isn't a TTY) — printing nothing there is the correct behavior, not a
+ * missing feature. No spinner, no animation: one line, shown once, cleared
+ * once.
+ */
+export async function withProgress<T>(
+  io: Io,
+  work: Promise<T>,
+  label = "scanning…",
+  delayMs = PROGRESS_DELAY_MS,
+): Promise<T> {
+  if (!io.progress) return work;
+  let shown = false;
+  const timer = setTimeout(() => {
+    shown = true;
+    io.progress?.(label);
+  }, delayMs);
+  try {
+    return await work;
+  } finally {
+    clearTimeout(timer);
+    if (shown) io.progress?.(null);
+  }
+}
 
 const HELP = `swarf — reclaim the disk space left behind by agent-driven development
 
@@ -145,10 +183,10 @@ export async function run(argv: string[], io: Io): Promise<number> {
     }
 
     const scanOpts = { roots, cwd: io.cwd, minAgeSeconds: parsed.minAgeSeconds };
-    const rows = await scan(scanOpts);
+    const rows = await withProgress(io, scan(scanOpts));
 
     if (parsed.command === "report") {
-      io.out(parsed.json ? renderJson(rows) : renderTable(rows));
+      io.out(parsed.json ? renderJson(rows) : renderTable(rows, { color: io.color }));
       return 0;
     }
 
@@ -164,7 +202,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
     const NOTHING: ReclaimResult = { deleted: [], failed: [], bytes: 0 };
 
     // Show what would happen, then confirm, then RE-SCAN before touching disk.
-    if (!parsed.json) io.out(renderTable(rows));
+    if (!parsed.json) io.out(renderTable(rows, { color: io.color }));
 
     const candidates =
       parsed.command === "clean"
@@ -172,8 +210,22 @@ export async function run(argv: string[], io: Io): Promise<number> {
         : selectForPrune(rows, parsed.includeCaution);
 
     if (candidates.length === 0) {
-      if (parsed.json) emitJson(NOTHING);
-      else io.out("\nNothing to reclaim.");
+      if (parsed.json) {
+        emitJson(NOTHING);
+        return 0;
+      }
+      // Case 4: the report had rows, but none of them qualify for THIS verb —
+      // distinct from "nothing exists at all" (that's renderTable's job) and
+      // distinct between the two verbs, since the fix differs: clean has no
+      // build output to remove; prune's candidates got filtered by safety or
+      // age.
+      io.out(
+        parsed.command === "clean"
+          ? "\nNo build artifacts found to clean."
+          : parsed.includeCaution
+            ? "\nNo worktrees currently qualify for pruning."
+            : "\nNo worktrees currently qualify for pruning (try --include-caution, or check --min-age).",
+      );
       return 0;
     }
 
@@ -204,7 +256,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
       return 0;
     }
 
-    const fresh = await scan(scanOpts);
+    const fresh = await withProgress(io, scan(scanOpts));
     const targets =
       parsed.command === "clean"
         ? fresh.filter((r) => r.sizes.artifacts.length > 0)
@@ -216,7 +268,13 @@ export async function run(argv: string[], io: Io): Promise<number> {
         : await pruneWorktrees(targets, { includeCaution: parsed.includeCaution });
 
     if (parsed.json) emitJson(result);
-    else io.out(`Reclaimed ${formatBytes(result.bytes)} from ${result.deleted.length} paths.`);
+    else {
+      // States what actually happened, not what was planned: `result.deleted`
+      // reflects the fresh re-scan, which can differ from `count` above if a
+      // row's safety changed between the plan and the confirmation.
+      const actualUnit = result.deleted.length === 1 ? singular : plural;
+      io.out(`Reclaimed ${formatBytes(result.bytes)} from ${result.deleted.length} ${actualUnit}.`);
+    }
     // Failures go to stderr either way, so stdout stays parseable under --json.
     for (const failure of result.failed) {
       io.err(`failed: ${failure.path} — ${failure.error}`);
