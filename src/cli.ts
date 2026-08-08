@@ -2,7 +2,7 @@ import { DEFAULT_MIN_AGE_SECONDS } from "./classify";
 import { gitOut, GitMissingError } from "./git";
 import { cleanArtifacts, pruneWorktrees, type ReclaimResult } from "./reclaim";
 import { artifactBytes, formatBytes, renderJson, renderTable, treeBytes } from "./render";
-import { scan } from "./scan";
+import { scan, type ScanOpts } from "./scan";
 import type { Row } from "./types";
 
 export type Command = "report" | "clean" | "prune";
@@ -62,6 +62,59 @@ export async function withProgress<T>(
   } finally {
     clearTimeout(timer);
     if (shown) io.progress?.(null);
+  }
+}
+
+/** Once shown, the progress line redraws no more often than this — a few
+ * updates per second reads as live; redrawing on every filesystem entry
+ * would just be a second performance problem wearing a progress bar. */
+export const PROGRESS_THROTTLE_MS = 200;
+
+/**
+ * Runs `scan`, showing live progress on `io.progress` once it's taken longer
+ * than `delayMs`: which repository/worktree count discovery has reached, and
+ * — once measuring starts — a completed/total worktree count plus a running
+ * reclaimable-bytes total, e.g. `scanning… 12/20 worktrees · 4.1 GB found`.
+ *
+ * Same contract as `withProgress`: a no-op when `io.progress` is absent
+ * (stderr isn't a TTY), and nothing is drawn at all if `scan` finishes
+ * before `delayMs` elapses. Kept separate from `withProgress` because that
+ * helper shows one static label once — this one redraws as `scan` reports
+ * progress, so it needs its own delay/throttle bookkeeping.
+ */
+export async function scanWithProgress(
+  io: Io,
+  opts: ScanOpts,
+  delayMs = PROGRESS_DELAY_MS,
+  throttleMs = PROGRESS_THROTTLE_MS,
+): Promise<Row[]> {
+  if (!io.progress) return scan(opts);
+
+  const start = Date.now();
+  let shown = false;
+  let lastDraw = 0;
+
+  const draw = (label: string) => {
+    const now = Date.now();
+    if (now - start < delayMs) return;
+    if (shown && now - lastDraw < throttleMs) return;
+    shown = true;
+    lastDraw = now;
+    io.progress?.(label);
+  };
+
+  try {
+    return await scan({
+      ...opts,
+      onProgress: (p) =>
+        draw(
+          p.phase === "discovering"
+            ? `scanning… ${p.repos} ${p.repos === 1 ? "repository" : "repositories"} found`
+            : `scanning… ${p.completed}/${p.total} ${p.total === 1 ? "worktree" : "worktrees"} · ${formatBytes(p.bytes)} found`,
+        ),
+    });
+  } finally {
+    if (shown) io.progress(null);
   }
 }
 
@@ -183,7 +236,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
     }
 
     const scanOpts = { roots, cwd: io.cwd, minAgeSeconds: parsed.minAgeSeconds };
-    const rows = await withProgress(io, scan(scanOpts));
+    const rows = await scanWithProgress(io, scanOpts);
 
     if (parsed.command === "report") {
       io.out(parsed.json ? renderJson(rows) : renderTable(rows, { color: io.color }));
@@ -256,7 +309,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
       return 0;
     }
 
-    const fresh = await withProgress(io, scan(scanOpts));
+    const fresh = await scanWithProgress(io, scanOpts);
     const targets =
       parsed.command === "clean"
         ? fresh.filter((r) => r.sizes.artifacts.length > 0)

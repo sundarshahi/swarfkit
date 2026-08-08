@@ -3,7 +3,8 @@ import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { makeRepo } from "./fixtures";
-import { parseArgs, parseDuration, run, withProgress, type Io } from "../src/cli";
+import { parseArgs, parseDuration, run, scanWithProgress, withProgress, type Io } from "../src/cli";
+import { DEFAULT_MIN_AGE_SECONDS } from "../src/classify";
 
 const DAY = 86_400;
 
@@ -498,5 +499,94 @@ describe("withProgress", () => {
     const io: Io = { cwd: "/", out: () => {}, err: () => {}, confirm: async () => false };
     const result = await withProgress(io, Promise.resolve(42));
     expect(result).toBe(42);
+  });
+});
+
+describe("scanWithProgress", () => {
+  test("shows live discovery and measuring progress once the delay elapses, then clears", async () => {
+    const fx = await makeRepo();
+    await fx.addWorktree({ name: "one", merge: "squash", ageSeconds: 30 * DAY });
+    await fx.addWorktree({ name: "two" });
+    const events: (string | null)[] = [];
+    const { io: i } = io(fx.root);
+
+    const rows = await scanWithProgress(
+      { ...i, progress: (s) => events.push(s) },
+      { roots: [fx.root], cwd: fx.root, minAgeSeconds: DEFAULT_MIN_AGE_SECONDS },
+      1, // delayMs — force display almost immediately, mirroring withProgress's tests
+      1, // throttleMs — let every update through so we can inspect them
+    );
+
+    expect(rows.length).toBeGreaterThan(0);
+    expect(events.length).toBeGreaterThan(0);
+    // Cleared with null as the very last event, same contract as withProgress.
+    expect(events.at(-1)).toBeNull();
+    // At least one measuring-phase line uses the "N/M worktrees · size found"
+    // shape, with the same byte units the final report uses.
+    expect(events.some((e) => typeof e === "string" && /\d+\/\d+ worktrees? · .+ found/.test(e))).toBe(true);
+    await fx.cleanup();
+  });
+
+  test("shows nothing when the scan finishes before the delay threshold", async () => {
+    const fx = await makeRepo();
+    const events: (string | null)[] = [];
+    const { io: i } = io(fx.root);
+
+    await scanWithProgress(
+      { ...i, progress: (s) => events.push(s) },
+      { roots: [fx.root], cwd: fx.root, minAgeSeconds: DEFAULT_MIN_AGE_SECONDS },
+      // default delayMs (400ms): a tiny single-repo fixture resolves well under that.
+    );
+
+    expect(events).toEqual([]);
+    await fx.cleanup();
+  });
+
+  test("is a no-op when io.progress is absent (stderr not a TTY)", async () => {
+    const fx = await makeRepo();
+    const { io: i } = io(fx.root);
+
+    const rows = await scanWithProgress(i, {
+      roots: [fx.root], cwd: fx.root, minAgeSeconds: DEFAULT_MIN_AGE_SECONDS,
+    });
+
+    expect(rows.length).toBeGreaterThan(0);
+    await fx.cleanup();
+  });
+
+  test("never writes to stdout while progress is active, mirroring --json's purity requirement", async () => {
+    const fx = await makeRepo();
+    await fx.addWorktree({ name: "one" });
+    const events: (string | null)[] = [];
+    const { io: i, out } = io(fx.root);
+
+    await scanWithProgress(
+      { ...i, progress: (s) => events.push(s) },
+      { roots: [fx.root], cwd: fx.root, minAgeSeconds: DEFAULT_MIN_AGE_SECONDS },
+      1,
+      1,
+    );
+
+    expect(events.length).toBeGreaterThan(0);
+    expect(out).toEqual([]);
+    await fx.cleanup();
+  });
+});
+
+describe("run() with --json keeps stdout pure even with progress wired up", () => {
+  test("stdout is exactly one parseable JSON payload, nothing from progress leaks in", async () => {
+    const fx = await makeRepo();
+    await fx.addWorktree({ name: "done", merge: "squash", ageSeconds: 30 * DAY });
+    const events: (string | null)[] = [];
+    const { io: i, out } = io(fx.root);
+
+    const code = await run(["--root", fx.root, "--json"], { ...i, progress: (s) => events.push(s) });
+
+    expect(code).toBe(0);
+    expect(out).toHaveLength(1);
+    expect(() => JSON.parse(out[0]!)).not.toThrow();
+    // Whatever progress did or didn't fire, none of it landed on stdout.
+    for (const line of out) expect(events).not.toContain(line);
+    await fx.cleanup();
   });
 });

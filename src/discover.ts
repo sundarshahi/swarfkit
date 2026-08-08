@@ -41,8 +41,15 @@ async function resolveMainWorktreeRoot(dir: string): Promise<string | null> {
  * to handle linked worktrees: a linked worktree has a `.git` FILE, and if both
  * the main repo and its linked siblings are under the same scanned root, they
  * would otherwise be discovered multiple times.
+ *
+ * `onRepoFound`, if given, is called with the running count each time a new
+ * repository is confirmed — this walk alone can take a while on a large
+ * root, and the caller uses it to show that discovery is progressing.
  */
-export async function findRepos(roots: string[]): Promise<string[]> {
+export async function findRepos(
+  roots: string[],
+  onRepoFound?: (count: number) => void,
+): Promise<string[]> {
   const found: string[] = [];
   const reposByCommonDir = new Map<string, string>();
 
@@ -69,6 +76,7 @@ export async function findRepos(roots: string[]): Promise<string[]> {
           const mainRoot = (await resolveMainWorktreeRoot(dir)) ?? dir;
           reposByCommonDir.set(commonDir, mainRoot);
           found.push(mainRoot);
+          onRepoFound?.(found.length);
         }
       }
       return;

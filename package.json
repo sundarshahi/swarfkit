@@ -1,6 +1,6 @@
 {
   "name": "swarfkit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Find and reclaim the disk space left behind by agent-driven development.",
   "type": "module",
   "author": "Sundar Shahi Thakuri",
