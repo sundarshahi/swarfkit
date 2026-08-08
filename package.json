@@ -7,7 +7,11 @@
   "files": ["src", "README.md"],
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:macos-arm": "bun build src/index.ts --compile --target=bun-darwin-arm64 --outfile dist/swarf-darwin-arm64",
+    "build:macos-x64": "bun build src/index.ts --compile --target=bun-darwin-x64 --outfile dist/swarf-darwin-x64",
+    "build:linux-x64": "bun build src/index.ts --compile --target=bun-linux-x64 --outfile dist/swarf-linux-x64",
+    "build": "bun run build:macos-arm && bun run build:macos-x64 && bun run build:linux-x64"
   },
   "keywords": ["git", "worktree", "disk-space", "node_modules", "cleanup", "cli"],
   "license": "MIT",
