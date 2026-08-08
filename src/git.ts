@@ -15,10 +15,11 @@ export type GitResult = { stdout: string; stderr: string; code: number };
  * exit status to answer questions (no upstream, not a repo) and those answers
  * are verdict inputs. Only a missing binary throws.
  *
- * Note: Uses manual Promise wrapping instead of util.promisify(execFile) because
- * Bun v1.0.29's runtime lacks the custom promisify handler that Node.js v22+ has.
- * Node.js's promisify.custom handler correctly returns {stdout, stderr} on success;
- * Bun's returns stdout only. This manual wrapper ensures compatibility with both.
+ * Note: Uses manual Promise wrapping instead of util.promisify(execFile). This
+ * was necessary on Bun v1.0.29, whose promisify.custom handler returned stdout
+ * only instead of Node's {stdout, stderr}. Fixed in later Bun releases
+ * (verified on 1.3.14, which matches Node). The manual wrapper is retained so
+ * this still works for anyone running an older Bun.
  */
 export async function git(
   cwd: string,
@@ -28,8 +29,11 @@ export async function git(
   return new Promise((resolve, reject) => {
     // Handles a spawn failure delivered either way execFile can deliver one:
     // via the callback's `error` (Node's documented behaviour), or as a
-    // synchronous throw out of execFile() itself (Bun 1.0.29 does this for
-    // both a missing cwd and a missing executable — see the try/catch below).
+    // synchronous throw out of execFile() itself. Bun v1.0.29 threw
+    // synchronously for both a missing cwd and a missing executable; fixed in
+    // later Bun releases (verified on 1.3.14: both now deliver via the
+    // callback, like Node). The try/catch below is retained for anyone
+    // running an older Bun.
     const handleSpawnError = (
       error: { code?: string | number; message?: string },
       stdout: string,
@@ -46,9 +50,10 @@ export async function git(
         reject(new GitMissingError());
         return;
       }
-      // Bun 1.0.29 resolves the executable itself before spawning and throws
-      // this synchronously (instead of Node's async ENOENT) when it isn't on
-      // PATH. Treat it the same as a missing binary.
+      // Bun v1.0.29 resolved the executable itself before spawning and threw
+      // this synchronously (instead of Node's async ENOENT) when it wasn't on
+      // PATH. No longer reproduces on later Bun (verified on 1.3.14). Treat
+      // it the same as a missing binary in case an older Bun hits this path.
       if (error.code === "ERR_INVALID_ARG_TYPE") {
         reject(new GitMissingError());
         return;

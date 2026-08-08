@@ -35,12 +35,15 @@ describe("git", () => {
     expect(res.code).not.toBe(0);
   });
 
-  // Bun 1.0.29 resolves the executable using the real OS process environment
-  // at spawn time, not the `env` option passed to execFile — so `git(dir,
-  // args, { PATH: "" })` does not actually hide the binary under Bun (probed
-  // directly; it silently falls through to a default PATH and still finds
-  // git). Forcing a genuine "binary missing" requires a child process whose
-  // real environment has no git on PATH.
+  // Bun v1.0.29 resolved the executable using the real OS process environment
+  // at spawn time, ignoring the `env` option passed to execFile entirely.
+  // Later Bun releases honor a custom PATH for exec resolution in general
+  // (verified on 1.3.14: an existing-but-wrong PATH correctly produces
+  // ENOENT) — but an *empty string* PATH is still treated as unset rather
+  // than "search nothing": `git(dir, args, { PATH: "" })` still silently
+  // falls through to a default PATH and finds git (probed directly on
+  // 1.3.14, still reproduces). Forcing a genuine "binary missing" still
+  // requires a child process whose real environment has no git on PATH.
   test("throws GitMissingError when the git binary itself is absent", async () => {
     const scratchDir = await mkdtemp(join(tmpdir(), "swarf-nogit-"));
     const scriptPath = join(scratchDir, "probe.mjs");

@@ -3,15 +3,17 @@
   "version": "0.1.0",
   "description": "Find and reclaim the disk space left behind by agent-driven development.",
   "type": "module",
-  "bin": { "swarf": "./src/index.ts" },
-  "files": ["src", "README.md"],
+  "bin": { "swarf": "./dist/swarf.js" },
+  "files": ["src", "README.md", "dist/swarf.js"],
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit",
+    "build:node": "bun build src/index.ts --target=node --outfile dist/swarf.js && node -e \"const f='dist/swarf.js';let s=require('fs').readFileSync(f,'utf8');s=s.replace(/^#!.*\\n/,'#!/usr/bin/env node\\n');require('fs').writeFileSync(f,s);require('fs').chmodSync(f,0o755)\"",
     "build:macos-arm": "bun build src/index.ts --compile --target=bun-darwin-arm64 --outfile dist/swarf-darwin-arm64",
     "build:macos-x64": "bun build src/index.ts --compile --target=bun-darwin-x64 --outfile dist/swarf-darwin-x64",
     "build:linux-x64": "bun build src/index.ts --compile --target=bun-linux-x64 --outfile dist/swarf-linux-x64",
-    "build": "bun run build:macos-arm && bun run build:macos-x64 && bun run build:linux-x64"
+    "build": "bun run build:node && bun run build:macos-arm && bun run build:macos-x64 && bun run build:linux-x64",
+    "prepublishOnly": "bun run build:node"
   },
   "keywords": ["git", "worktree", "disk-space", "node_modules", "cleanup", "cli"],
   "license": "MIT",
