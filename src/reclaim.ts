@@ -130,13 +130,26 @@ async function assertStillARealRegisteredWorktree(wt: Worktree): Promise<void> {
   }
 }
 
-/** Tier 2 — whole worktrees. Only rows already classified `safe`. */
-export async function pruneWorktrees(rows: Row[]): Promise<ReclaimResult> {
+export type PruneOpts = {
+  /** Also allow `caution` rows (merged/clean/pushed but younger than min-age). Default false. */
+  includeCaution?: boolean;
+};
+
+/**
+ * Tier 2 — whole worktrees. Only rows classified `safe`, or `caution` when
+ * `includeCaution` is explicitly passed. `blocked` is never eligible,
+ * regardless of the flag — this gate is independent of whatever the caller
+ * already filtered, deliberately, as defence in depth.
+ */
+export async function pruneWorktrees(rows: Row[], opts: PruneOpts = {}): Promise<ReclaimResult> {
   const worktrees = rows.map((r) => r.worktree);
   const result: ReclaimResult = { deleted: [], failed: [], bytes: 0 };
+  const eligible: Row["verdict"]["safety"][] = opts.includeCaution
+    ? ["safe", "caution"]
+    : ["safe"];
 
   for (const row of rows) {
-    if (row.verdict.safety !== "safe") continue;
+    if (!eligible.includes(row.verdict.safety)) continue;
     if (row.worktree.isMain || row.worktree.isCurrent) continue;
 
     try {

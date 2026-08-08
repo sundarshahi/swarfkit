@@ -138,6 +138,26 @@ describe("pruneWorktrees", () => {
     },
   );
 
+  test("includeCaution: true widens the gate to caution rows", async () => {
+    const fx = await makeRepo();
+    const wt = await fx.addWorktree({ name: "young", merge: "squash" });
+    const rows = await rowsFor(fx, "caution");
+    const result = await pruneWorktrees(rows, { includeCaution: true });
+    expect(result.deleted).toHaveLength(1);
+    expect(existsSync(wt)).toBe(false);
+    await fx.cleanup();
+  });
+
+  test("includeCaution: true never widens the gate to blocked rows — this is pruneWorktrees's OWN gate, independent of whatever the caller already filtered", async () => {
+    const fx = await makeRepo();
+    const wt = await fx.addWorktree({ name: "open" });
+    const rows = await rowsFor(fx, "blocked");
+    const result = await pruneWorktrees(rows, { includeCaution: true });
+    expect(result.deleted).toHaveLength(0);
+    expect(existsSync(wt)).toBe(true);
+    await fx.cleanup();
+  });
+
   test("refuses a worktree directory swapped for a symlink after plan time (TOCTOU)", async () => {
     const fx = await makeRepo();
     const wt = await fx.addWorktree({ name: "done", merge: "squash", ageSeconds: 30 * DAY });

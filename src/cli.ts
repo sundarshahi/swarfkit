@@ -183,7 +183,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
     const result =
       parsed.command === "clean"
         ? await cleanArtifacts(targets)
-        : await pruneWorktrees(targets);
+        : await pruneWorktrees(targets, { includeCaution: parsed.includeCaution });
 
     io.out(`Reclaimed ${formatBytes(result.bytes)} from ${result.deleted.length} paths.`);
     for (const failure of result.failed) {

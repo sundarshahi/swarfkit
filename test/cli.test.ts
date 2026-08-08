@@ -126,6 +126,38 @@ describe("run", () => {
     await fx.cleanup();
   });
 
+  test("prune --include-caution removes a merged-but-young caution worktree", async () => {
+    const fx = await makeRepo();
+    // merged, clean, pushed, but ageSeconds omitted (0) => younger than the
+    // default 7d min-age => caution, not safe.
+    const caution = await fx.addWorktree({ name: "young", merge: "squash" });
+    const { io: i } = io(fx.root, true);
+    const code = await run(["prune", "--include-caution", "--root", fx.root], i);
+    expect(code).toBe(0);
+    expect(existsSync(caution)).toBe(false);
+    await fx.cleanup();
+  });
+
+  test("plain prune (no --include-caution) leaves a caution worktree behind", async () => {
+    const fx = await makeRepo();
+    const caution = await fx.addWorktree({ name: "young", merge: "squash" });
+    const { io: i } = io(fx.root, true);
+    const code = await run(["prune", "--root", fx.root], i);
+    expect(code).toBe(0);
+    expect(existsSync(caution)).toBe(true);
+    await fx.cleanup();
+  });
+
+  test("prune --include-caution never removes a blocked worktree", async () => {
+    const fx = await makeRepo();
+    const blocked = await fx.addWorktree({ name: "open", merge: "none", ageSeconds: 30 * DAY });
+    const { io: i } = io(fx.root, true);
+    const code = await run(["prune", "--include-caution", "--root", fx.root], i);
+    expect(code).toBe(0);
+    expect(existsSync(blocked)).toBe(true);
+    await fx.cleanup();
+  });
+
   test("exits 2 on an unknown flag and writes to the err channel", async () => {
     const fx = await makeRepo();
     const { io: i, out, err } = io(fx.root);
