@@ -1,0 +1,18 @@
+{
+  "name": "swarfkit",
+  "version": "0.1.0",
+  "description": "Find and reclaim the disk space left behind by agent-driven development.",
+  "type": "module",
+  "bin": { "swarf": "./src/index.ts" },
+  "files": ["src", "README.md"],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": ["git", "worktree", "disk-space", "node_modules", "cleanup", "cli"],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.4.0"
+  }
+}
