@@ -14,13 +14,29 @@ export function formatBytes(n: number): string {
   return `${value.toFixed(1)} ${UNITS[unit]}`;
 }
 
+/** Exactly what `clean` deletes from this row: its build artifact directories. */
+export function artifactBytes(row: Row): number {
+  return row.sizes.artifacts.reduce((sum, a) => sum + Math.max(0, a.bytes), 0);
+}
+
 /**
- * Bytes this row would free. A safe row can lose its whole tree; anything else
- * can still lose its build artifacts, which is tier 1 and always permitted.
+ * Exactly what `prune` deletes from this row: the whole tree. Falls back to the
+ * artifact sum when the total is unknown (-1, permission denied) — reporting 0
+ * for a row that demonstrably holds measured artifacts is simply wrong.
+ */
+export function treeBytes(row: Row): number {
+  return row.sizes.total >= 0 ? row.sizes.total : artifactBytes(row);
+}
+
+/**
+ * What the *report* shows. A safe row is a prune candidate and can lose its
+ * whole tree; anything else can still lose its build artifacts, which is tier 1
+ * and always permitted. Command prompts must NOT use this — they use the
+ * function matching the command, because `clean` on a safe row deletes only
+ * artifacts and `prune --include-caution` on a caution row deletes everything.
  */
 export function reclaimableBytes(row: Row): number {
-  if (row.verdict.safety === "safe") return Math.max(0, row.sizes.total);
-  return row.sizes.artifacts.reduce((sum, a) => sum + Math.max(0, a.bytes), 0);
+  return row.verdict.safety === "safe" ? treeBytes(row) : artifactBytes(row);
 }
 
 function byReclaimableDesc(a: Row, b: Row): number {

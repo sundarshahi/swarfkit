@@ -7,6 +7,12 @@ export type Worktree = {
   repoRoot: string;
   isMain: boolean;
   isCurrent: boolean;
+  /**
+   * `git worktree lock` was used on it. `git worktree remove` refuses a locked
+   * worktree outright, so reporting one as `safe` guarantees a failed prune
+   * (exit 1). Classified `blocked` instead.
+   */
+  locked: boolean;
 };
 
 export type Safety = "safe" | "caution" | "blocked";

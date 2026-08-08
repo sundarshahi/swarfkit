@@ -24,6 +24,23 @@ describe("listWorktrees", () => {
     await fx.cleanup();
   });
 
+  test("parses the porcelain `locked` line", async () => {
+    const fx = await makeRepo();
+    const { git } = await import("../src/git");
+    const a = await fx.addWorktree({ name: "alpha" });
+    await fx.addWorktree({ name: "beta" });
+    await git(fx.root, ["worktree", "lock", "--reason", "on a usb stick", a]);
+
+    const wts = await listWorktrees(fx.root, fx.root);
+    expect(wts.find((w) => w.branch === "alpha")?.locked).toBe(true);
+    // The flag must reset between records, not bleed into the next worktree.
+    expect(wts.find((w) => w.branch === "beta")?.locked).toBe(false);
+    expect(wts.find((w) => w.isMain)?.locked).toBe(false);
+
+    await git(fx.root, ["worktree", "unlock", a]);
+    await fx.cleanup();
+  });
+
   test("marks the worktree containing cwd as current", async () => {
     const fx = await makeRepo();
     const a = await fx.addWorktree({ name: "alpha" });

@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Find and reclaim the disk space left behind by agent-driven development.",
   "type": "module",
+  "author": "Sundar Shahi Thakuri",
+  "repository": { "type": "git", "url": "git+https://github.com/sundarshahi/swarfkit.git" },
+  "engines": { "node": ">=22.0.0" },
   "bin": { "swarf": "./dist/swarf.js" },
   "files": ["src", "README.md", "dist/swarf.js"],
   "scripts": {

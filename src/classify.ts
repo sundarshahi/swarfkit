@@ -25,6 +25,10 @@ export async function classify(wt: Worktree, opts: ClassifyOpts): Promise<Verdic
   if (wt.isMain) reasons.push("is the main worktree");
   if (wt.isCurrent) reasons.push("is the current worktree");
 
+  // `git worktree remove` refuses a locked worktree, so calling one `safe`
+  // buys nothing but a failed prune and exit 1.
+  if (wt.locked) reasons.push("is locked (git worktree unlock to release it)");
+
   // A detached worktree has no branch, so rules 3 and 4 cannot be evaluated.
   if (wt.branch === null) {
     reasons.push("HEAD is detached");

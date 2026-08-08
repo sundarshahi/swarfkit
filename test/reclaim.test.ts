@@ -158,6 +158,54 @@ describe("pruneWorktrees", () => {
     await fx.cleanup();
   });
 
+  // These two cover `if (row.worktree.isMain || row.worktree.isCurrent) continue`.
+  // Deleting that line left the rest of the suite green, yet it is the last
+  // defence between a classifier bug and losing your primary checkout. Both
+  // rows are hand-built as `safe` and pass every other guard — registered,
+  // a real directory, inside itself — so ONLY that line can refuse them.
+  test("refuses the MAIN worktree even when handed a safe row", async () => {
+    const fx = await makeRepo();
+    await fx.addWorktree({ name: "alpha" });
+    // cwd outside every worktree, so isCurrent is false everywhere and isMain
+    // is the only flag under test.
+    const wts = await listWorktrees(fx.root, "/");
+    const main = wts.find((w) => w.isMain)!;
+    expect(main.isCurrent).toBe(false);
+
+    const rows: Row[] = [
+      { worktree: main, verdict: { safety: "safe", reasons: [] }, sizes: await measure(main.path) },
+    ];
+    const result = await pruneWorktrees(rows);
+
+    expect(result.deleted).toHaveLength(0);
+    expect(result.failed).toHaveLength(0); // skipped outright, not attempted-and-failed
+    expect(existsSync(main.path)).toBe(true);
+    await fx.cleanup();
+  });
+
+  test("refuses the CURRENT worktree even when handed a safe row", async () => {
+    const fx = await makeRepo();
+    const wt = await fx.addWorktree({ name: "alpha" });
+    // cwd inside the linked worktree makes it isCurrent without making it isMain.
+    const wts = await listWorktrees(fx.root, wt);
+    const current = wts.find((w) => w.isCurrent)!;
+    expect(current.isMain).toBe(false);
+
+    const rows: Row[] = [
+      {
+        worktree: current,
+        verdict: { safety: "safe", reasons: [] },
+        sizes: await measure(current.path),
+      },
+    ];
+    const result = await pruneWorktrees(rows);
+
+    expect(result.deleted).toHaveLength(0);
+    expect(result.failed).toHaveLength(0);
+    expect(existsSync(wt)).toBe(true);
+    await fx.cleanup();
+  });
+
   test("refuses a worktree directory swapped for a symlink after plan time (TOCTOU)", async () => {
     const fx = await makeRepo();
     const wt = await fx.addWorktree({ name: "done", merge: "squash", ageSeconds: 30 * DAY });

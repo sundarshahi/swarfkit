@@ -107,6 +107,7 @@ export async function listWorktrees(repoRoot: string, cwd: string): Promise<Work
   let path = "";
   let head = "";
   let branch: string | null = null;
+  let locked = false;
 
   const flush = async () => {
     if (!path) return;
@@ -119,10 +120,12 @@ export async function listWorktrees(repoRoot: string, cwd: string): Promise<Work
       repoRoot,
       isMain: worktrees.length === 0,
       isCurrent: isInside(resolvedCwd, resolvedPath),
+      locked,
     });
     path = "";
     head = "";
     branch = null;
+    locked = false;
   };
 
   for (const line of out.split("\n")) {
@@ -133,7 +136,9 @@ export async function listWorktrees(repoRoot: string, cwd: string): Promise<Work
       branch = line.slice(7).replace(/^refs\/heads\//, "");
       continue;
     }
-    if (line === "detached") branch = null;
+    if (line === "detached") { branch = null; continue; }
+    // `locked` appears bare or as `locked <reason>`.
+    if (line === "locked" || line.startsWith("locked ")) locked = true;
   }
   await flush();
 

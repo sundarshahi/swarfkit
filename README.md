@@ -28,7 +28,8 @@ npm install -g swarfkit
 swarf --root ~/dev
 ```
 
-You need Node and `git` on your PATH. That is all. Built and tested on Node 22.
+You need Node 22 or newer and `git` on your PATH. That is all. Node 22 is what
+it is built and tested on, and what `engines.node` requires.
 
 ## Usage
 
@@ -70,7 +71,8 @@ main                 blocked   2.1 GB  is the main worktree
 
 All five of these must be true. If any one fails, `swarf` will not delete it.
 
-1. **It is not your main worktree, and not the one you are currently in.**
+1. **It is not your main worktree, not the one you are currently in, and not
+   locked.**
 2. **It has no uncommitted changes.**
 3. **Everything is pushed.** It must have an upstream branch, and nothing on it
    that has not been pushed.
@@ -103,7 +105,23 @@ anything.
 
 Instead `swarf` uses `git cherry`, which compares the actual changes rather
 than the commit IDs. The same change under a different commit ID still counts
-as merged. This works with squash merges and with rebase merges.
+as merged. This works with rebase merges and with single-commit squash merges.
+
+`git cherry` compares one commit at a time, though, and a squash merge of a
+three-commit branch produces one upstream commit that matches none of the
+three. So when `git cherry` says no, `swarf` asks a second question: it builds
+the commit the squash *would* have made — the branch's own tree, on top of the
+merge base — and compares that single commit instead. That is what catches a
+normal multi-commit pull request.
+
+The second check has to prove the branch shipped, not just fail to disprove it:
+it accepts exactly one answer, "this patch is already upstream". Anything else
+— including a branch that was squash-merged and then had another commit added —
+leaves the worktree alone.
+
+(That check asks git to write one small commit object into your repository. It
+is unreferenced and unreachable, so `git gc` cleans it up like any other
+dangling object.)
 
 ## Why not just use `git worktree prune`?
 
@@ -126,7 +144,7 @@ Usage:
 
 Options:
   --root <dir>        scan this directory (repeatable; defaults to the current repo)
-  --json              machine-readable output
+  --json              machine-readable output (for clean/prune: what was deleted)
   --min-age <dur>     age rule for prune, e.g. 7d, 12h, 2w (default 7d)
   --include-caution   also offer worktrees younger than --min-age
   --yes               skip the confirmation prompt
@@ -135,7 +153,10 @@ Options:
 Exit codes: 0 success · 1 a deletion failed · 2 usage error or git not found
 ```
 
-Use `--json` if you want to script it. Use `--yes` to skip the prompt in CI.
+Use `--json` if you want to script it. It works for all three commands: on
+`clean` and `prune` it replaces the table with a single object listing what was
+deleted, what failed, and how many bytes came back. Use `--yes` to skip the
+prompt in CI.
 
 ## Exit codes
 

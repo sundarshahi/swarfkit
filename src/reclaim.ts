@@ -2,6 +2,7 @@ import { rm, realpath, lstat } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { git } from "./git";
 import { listWorktrees } from "./discover";
+import { treeBytes } from "./render";
 import type { Row, Worktree } from "./types";
 
 export class PathInvariantError extends Error {
@@ -162,7 +163,8 @@ export async function pruneWorktrees(rows: Row[], opts: PruneOpts = {}): Promise
       ]);
       if (res.code !== 0) throw new Error(res.stderr.trim() || "git worktree remove failed");
       result.deleted.push(row.worktree.path);
-      result.bytes += Math.max(0, row.sizes.total);
+      // Same accounting the confirmation prompt used, so the two agree exactly.
+      result.bytes += treeBytes(row);
     } catch (err) {
       result.failed.push({
         path: row.worktree.path,

@@ -45,6 +45,18 @@ describe("classify", () => {
     await fx.cleanup();
   });
 
+  test("blocked: a locked worktree, which git would refuse to remove anyway", async () => {
+    const fx = await makeRepo();
+    // Otherwise perfectly safe: merged, clean, pushed, old.
+    const wt = await fx.addWorktree({ name: "done", merge: "squash", ageSeconds: 30 * DAY });
+    await git(fx.root, ["worktree", "lock", "--reason", "on a usb stick", wt]);
+    const v = await verdictFor(fx, wt);
+    expect(v.safety).toBe("blocked");
+    expect(v.reasons.join(" ")).toContain("locked");
+    await git(fx.root, ["worktree", "unlock", wt]);
+    await fx.cleanup();
+  });
+
   test("blocked: the current worktree is never reclaimable", async () => {
     const fx = await makeRepo();
     const wt = await fx.addWorktree({ name: "here", merge: "squash", ageSeconds: 30 * DAY });

@@ -10,16 +10,27 @@ const DAY = 86_400;
 function io(cwd: string, answer = true) {
   const out: string[] = [];
   const err: string[] = [];
+  const asked: string[] = [];
   return {
     io: {
       cwd,
       out: (s: string) => out.push(s),
       err: (s: string) => err.push(s),
-      confirm: async () => answer,
+      confirm: async (question: string) => {
+        asked.push(question);
+        return answer;
+      },
     },
     out,
     err,
+    asked,
   };
+}
+
+/** The formatted byte figure in a line, e.g. "52.0 MB" — or "" if absent. */
+const SIZE = /(\d+(?:\.\d+)? (?:B|KB|MB|GB|TB))/;
+function size(text: string): string {
+  return SIZE.exec(text)?.[1] ?? "";
 }
 
 describe("parseDuration", () => {
@@ -156,6 +167,131 @@ describe("run", () => {
     expect(code).toBe(0);
     expect(existsSync(blocked)).toBe(true);
     await fx.cleanup();
+  });
+
+  // The confirmation figure must describe exactly what THIS command deletes.
+  // Measured before the fix: `clean` on a safe row promised 52.0 MB and freed
+  // 2.0 MB (26x over); `prune --include-caution` on a caution row promised
+  // 1.0 MB and freed 41.0 MB, taking the whole worktree with it (41x under).
+  describe("the confirmation figure matches what is actually deleted", () => {
+    test("clean promises only the artifact bytes, even on a safe row", async () => {
+      const fx = await makeRepo();
+      const wt = await fx.addWorktree({ name: "done", merge: "squash", ageSeconds: 30 * DAY });
+      await fx.addArtifacts(wt, "node_modules", 2_000_000);
+      await fx.addArtifacts(wt, "logs", 20_000_000); // bulk that clean must NOT count
+      const { io: i, out, asked } = io(fx.root, true);
+
+      expect(await run(["clean", "--root", fx.root], i)).toBe(0);
+      const promised = size(asked.join("\n"));
+      const actual = size(out.find((l) => l.startsWith("Reclaimed")) ?? "");
+      expect(promised).not.toBe("");
+      expect(promised).toBe(actual);
+      await fx.cleanup();
+    });
+
+    test("prune promises the whole tree for a safe row", async () => {
+      const fx = await makeRepo();
+      const wt = await fx.addWorktree({ name: "done", merge: "squash", ageSeconds: 30 * DAY });
+      await fx.addArtifacts(wt, "node_modules", 2_000_000);
+      await fx.addArtifacts(wt, "logs", 20_000_000); // bulk that prune DOES take
+      const { io: i, out, asked } = io(fx.root, true);
+
+      expect(await run(["prune", "--root", fx.root], i)).toBe(0);
+      const promised = size(asked.join("\n"));
+      const actual = size(out.find((l) => l.startsWith("Reclaimed")) ?? "");
+      expect(promised).not.toBe("");
+      expect(promised).toBe(actual);
+      await fx.cleanup();
+    });
+
+    test("prune --include-caution promises the whole tree for a caution row", async () => {
+      const fx = await makeRepo();
+      // merged and clean but young => caution, whose report figure is its
+      // artifacts only, while prune takes the entire worktree.
+      const wt = await fx.addWorktree({ name: "young", merge: "squash" });
+      await fx.addArtifacts(wt, "node_modules", 2_000_000);
+      await fx.addArtifacts(wt, "logs", 20_000_000); // bulk that prune DOES take
+      const { io: i, out, asked } = io(fx.root, true);
+
+      expect(await run(["prune", "--include-caution", "--root", fx.root], i)).toBe(0);
+      const promised = size(asked.join("\n"));
+      const actual = size(out.find((l) => l.startsWith("Reclaimed")) ?? "");
+      expect(promised).not.toBe("");
+      expect(promised).toBe(actual);
+      expect(existsSync(wt)).toBe(false);
+      await fx.cleanup();
+    });
+
+    test("the prompt counts the noun it names", async () => {
+      const fx = await makeRepo();
+      const wt = await fx.addWorktree({ name: "alpha" });
+      await fx.addArtifacts(wt, "node_modules", 1024);
+      await fx.addArtifacts(wt, "dist", 1024);
+      const { io: i, asked } = io(fx.root, false);
+
+      await run(["clean", "--root", fx.root], i);
+      // Two artifact directories in one worktree: the count is of directories,
+      // matching the noun, and the sentence does not dangle on "in".
+      expect(asked[0]).toContain("Delete 2 build directories to reclaim");
+      expect(asked[0]).not.toContain("in?");
+      await fx.cleanup();
+    });
+
+    test("the prompt singularises a count of one", async () => {
+      const fx = await makeRepo();
+      await fx.addWorktree({ name: "done", merge: "squash", ageSeconds: 30 * DAY });
+      const { io: i, asked } = io(fx.root, false);
+      await run(["prune", "--root", fx.root], i);
+      expect(asked[0]).toContain("Delete 1 worktree to reclaim");
+      await fx.cleanup();
+    });
+  });
+
+  describe("--json is honoured by clean and prune, not silently ignored", () => {
+    test("prune --json --yes emits only parseable JSON naming what it deleted", async () => {
+      const fx = await makeRepo();
+      const wt = await fx.addWorktree({ name: "done", merge: "squash", ageSeconds: 30 * DAY });
+      const { io: i, out } = io(fx.root, true);
+
+      expect(await run(["prune", "--root", fx.root, "--json", "--yes"], i)).toBe(0);
+      const parsed = JSON.parse(out.join("\n"));
+      expect(parsed.command).toBe("prune");
+      expect(parsed.deleted).toHaveLength(1);
+      expect(parsed.failed).toEqual([]);
+      expect(parsed.bytes).toBeGreaterThan(0);
+      expect(existsSync(wt)).toBe(false);
+      await fx.cleanup();
+    });
+
+    test("clean --json emits parseable JSON with no human table", async () => {
+      const fx = await makeRepo();
+      const wt = await fx.addWorktree({ name: "alpha" });
+      await fx.addArtifacts(wt, "node_modules", 4096);
+      const { io: i, out } = io(fx.root, true);
+
+      expect(await run(["clean", "--root", fx.root, "--json"], i)).toBe(0);
+      const parsed = JSON.parse(out.join("\n"));
+      expect(parsed.command).toBe("clean");
+      expect(parsed.deleted).toHaveLength(1);
+      expect(existsSync(join(wt, "node_modules"))).toBe(false);
+      await fx.cleanup();
+    });
+
+    test("--json stays parseable when the user declines and when there is nothing to do", async () => {
+      const fx = await makeRepo();
+      const wt = await fx.addWorktree({ name: "alpha" });
+      await fx.addArtifacts(wt, "node_modules", 4096);
+
+      const declined = io(fx.root, false);
+      expect(await run(["clean", "--root", fx.root, "--json"], declined.io)).toBe(0);
+      expect(JSON.parse(declined.out.join("\n")).deleted).toEqual([]);
+      expect(existsSync(join(wt, "node_modules"))).toBe(true);
+
+      const empty = io(fx.root, true);
+      expect(await run(["prune", "--root", fx.root, "--json", "--yes"], empty.io)).toBe(0);
+      expect(JSON.parse(empty.out.join("\n"))).toMatchObject({ deleted: [], bytes: 0 });
+      await fx.cleanup();
+    });
   });
 
   test("exits 2 on an unknown flag and writes to the err channel", async () => {

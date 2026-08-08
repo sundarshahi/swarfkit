@@ -7,6 +7,13 @@ export type WorktreeOpts = {
   name: string;
   /** How the branch relates to trunk. */
   merge?: "none" | "squash" | "ff";
+  /**
+   * How many commits the branch carries before any merge. Defaults to 1.
+   * `git cherry` compares patch ids per commit, so a squash of N > 1 commits
+   * behaves differently from a squash of exactly one — the single-commit-only
+   * fixture is what let that hole ship.
+   */
+  commits?: number;
   /** Leave an uncommitted change in the worktree. */
   dirty?: boolean;
   /** Create the branch without pushing it to origin. */
@@ -50,6 +57,18 @@ export async function makeRepo(): Promise<Fixture> {
   await git(base, ["clone", "-q", remote, root]);
   await git(root, [...AUTHOR, "symbolic-ref", "HEAD", "refs/heads/trunk"]);
   await writeFile(join(root, "README.md"), "# fixture\n");
+  // Real repos ignore their build output. Without this, `addArtifacts` leaves
+  // untracked files and every worktree it touches reads as dirty — which would
+  // quietly make it impossible to test `prune` against a worktree that has
+  // artifacts in it.
+  await writeFile(
+    join(root, ".gitignore"),
+    // `logs/` is deliberately NOT one of swarfkit's artifact directories: it
+    // gives tests a way to add bulk that counts toward a worktree's total but
+    // not toward its artifacts, so the two figures are far enough apart that
+    // rounding to one decimal cannot make a wrong one look right.
+    "node_modules/\n.next/\ndist/\nbuild/\n.turbo/\nlogs/\n",
+  );
   await git(root, ["add", "-A"]);
   await commit(root, "initial");
   await git(root, ["push", "-q", "-u", "origin", "trunk"]);
@@ -59,6 +78,7 @@ export async function makeRepo(): Promise<Fixture> {
     const {
       name,
       merge = "none",
+      commits = 1,
       dirty = false,
       noUpstream = false,
       extraCommit = false,
@@ -67,9 +87,13 @@ export async function makeRepo(): Promise<Fixture> {
     const wtPath = join(base, `wt-${name}`);
 
     await git(root, ["worktree", "add", "-q", "-b", name, wtPath, "trunk"]);
-    await writeFile(join(wtPath, `${name}.txt`), `work for ${name}\n`);
-    await git(wtPath, ["add", "-A"]);
-    await commit(wtPath, `work on ${name}`, ageSeconds);
+    for (let i = 1; i <= commits; i++) {
+      // The first file keeps the bare `<name>.txt` form other tests assert on.
+      const file = i === 1 ? `${name}.txt` : `${name}-${i}.txt`;
+      await writeFile(join(wtPath, file), `work ${i} for ${name}\n`);
+      await git(wtPath, ["add", "-A"]);
+      await commit(wtPath, `work on ${name} (${i}/${commits})`, ageSeconds);
+    }
 
     if (!noUpstream) {
       await git(wtPath, ["push", "-q", "-u", "origin", name]);

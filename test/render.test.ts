@@ -1,12 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { formatBytes, renderTable, renderJson, reclaimableBytes } from "../src/render";
+import {
+  artifactBytes, formatBytes, renderTable, renderJson, reclaimableBytes, treeBytes,
+} from "../src/render";
 import type { Row } from "../src/types";
 
 function row(over: Partial<Row> = {}): Row {
   return {
     worktree: {
       path: "/tmp/wt-a", branch: "feature-a", head: "abc",
-      repoRoot: "/tmp/repo", isMain: false, isCurrent: false,
+      repoRoot: "/tmp/repo", isMain: false, isCurrent: false, locked: false,
     },
     verdict: { safety: "safe", reasons: [] },
     sizes: { total: 2_000_000, artifacts: [{ path: "/tmp/wt-a/node_modules", bytes: 1_500_000 }] },
@@ -40,6 +42,32 @@ describe("reclaimableBytes", () => {
   test("treats unknown total as zero rather than negative", () => {
     const r = row({ sizes: { total: -1, artifacts: [] } });
     expect(reclaimableBytes(r)).toBe(0);
+  });
+
+  test("falls back to measured artifacts when a safe row's total is unknown", () => {
+    // total: -1 means the walk could not read the tree, not that it is empty.
+    // Reporting 0 while holding measured artifacts is simply wrong.
+    const r = row({ sizes: { total: -1, artifacts: [{ path: "/tmp/wt-a/dist", bytes: 900 }] } });
+    expect(reclaimableBytes(r)).toBe(900);
+    expect(treeBytes(r)).toBe(900);
+  });
+});
+
+describe("artifactBytes and treeBytes", () => {
+  test("split what clean deletes from what prune deletes", () => {
+    // The confirmation prompt picks one per command; a single shared number was
+    // wrong in both directions.
+    expect(artifactBytes(row())).toBe(1_500_000);
+    expect(treeBytes(row())).toBe(2_000_000);
+
+    const caution = row({ verdict: { safety: "caution", reasons: ["younger than 7d"] } });
+    expect(artifactBytes(caution)).toBe(1_500_000);
+    expect(treeBytes(caution)).toBe(2_000_000); // prune takes the whole tree
+  });
+
+  test("ignore negative artifact sizes", () => {
+    const r = row({ sizes: { total: 10, artifacts: [{ path: "/tmp/wt-a/dist", bytes: -1 }] } });
+    expect(artifactBytes(r)).toBe(0);
   });
 });
 

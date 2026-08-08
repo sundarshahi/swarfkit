@@ -1,7 +1,7 @@
 import { DEFAULT_MIN_AGE_SECONDS } from "./classify";
 import { gitOut, GitMissingError } from "./git";
-import { cleanArtifacts, pruneWorktrees } from "./reclaim";
-import { formatBytes, renderJson, renderTable, reclaimableBytes } from "./render";
+import { cleanArtifacts, pruneWorktrees, type ReclaimResult } from "./reclaim";
+import { artifactBytes, formatBytes, renderJson, renderTable, treeBytes } from "./render";
 import { scan } from "./scan";
 import type { Row } from "./types";
 
@@ -36,7 +36,7 @@ Usage:
 
 Options:
   --root <dir>        scan this directory (repeatable; defaults to the current repo)
-  --json              machine-readable output
+  --json              machine-readable output (for clean/prune: what was deleted)
   --min-age <dur>     age rule for prune, e.g. 7d, 12h, 2w (default 7d)
   --include-caution   also offer worktrees younger than --min-age
   --yes               skip the confirmation prompt
@@ -152,8 +152,19 @@ export async function run(argv: string[], io: Io): Promise<number> {
       return 0;
     }
 
+    // With --json, stdout carries the result object and nothing else, so the
+    // human plan table is suppressed rather than silently corrupting it.
+    const emitJson = (result: ReclaimResult) =>
+      io.out(JSON.stringify({
+        command: parsed.command,
+        bytes: result.bytes,
+        deleted: result.deleted,
+        failed: result.failed,
+      }, null, 2));
+    const NOTHING: ReclaimResult = { deleted: [], failed: [], bytes: 0 };
+
     // Show what would happen, then confirm, then RE-SCAN before touching disk.
-    io.out(renderTable(rows));
+    if (!parsed.json) io.out(renderTable(rows));
 
     const candidates =
       parsed.command === "clean"
@@ -161,16 +172,33 @@ export async function run(argv: string[], io: Io): Promise<number> {
         : selectForPrune(rows, parsed.includeCaution);
 
     if (candidates.length === 0) {
-      io.out("\nNothing to reclaim.");
+      if (parsed.json) emitJson(NOTHING);
+      else io.out("\nNothing to reclaim.");
       return 0;
     }
 
-    const bytes = candidates.reduce((sum, r) => sum + reclaimableBytes(r), 0);
-    const noun = parsed.command === "clean" ? "artifact directories in" : "worktrees";
-    const question = `\nReclaim ${formatBytes(bytes)} from ${candidates.length} ${noun}? [y/N] `;
+    // The figure must describe what THIS command deletes. `clean` removes only
+    // the artifact directories even from a safe row; `prune` removes the whole
+    // tree even from a caution row. One shared "reclaimable" number was wrong
+    // in both directions — measured 26x over for clean, 41x under for prune.
+    const [bytes, count, noun] =
+      parsed.command === "clean"
+        ? [
+            candidates.reduce((sum, r) => sum + artifactBytes(r), 0),
+            candidates.reduce((sum, r) => sum + r.sizes.artifacts.length, 0),
+            "build directories",
+          ]
+        : [
+            candidates.reduce((sum, r) => sum + treeBytes(r), 0),
+            candidates.length,
+            "worktrees",
+          ];
+    const unit = count === 1 ? noun.replace(/s$/, "") : noun;
+    const question = `\nDelete ${count} ${unit} to reclaim ${formatBytes(bytes)}? [y/N] `;
 
     if (!parsed.yes && !(await io.confirm(question))) {
-      io.out("Nothing deleted.");
+      if (parsed.json) emitJson(NOTHING);
+      else io.out("Nothing deleted.");
       return 0;
     }
 
@@ -185,7 +213,9 @@ export async function run(argv: string[], io: Io): Promise<number> {
         ? await cleanArtifacts(targets)
         : await pruneWorktrees(targets, { includeCaution: parsed.includeCaution });
 
-    io.out(`Reclaimed ${formatBytes(result.bytes)} from ${result.deleted.length} paths.`);
+    if (parsed.json) emitJson(result);
+    else io.out(`Reclaimed ${formatBytes(result.bytes)} from ${result.deleted.length} paths.`);
+    // Failures go to stderr either way, so stdout stays parseable under --json.
     for (const failure of result.failed) {
       io.err(`failed: ${failure.path} — ${failure.error}`);
     }
