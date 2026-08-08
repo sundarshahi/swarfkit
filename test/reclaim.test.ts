@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdir, realpath, symlink, writeFile } from "node:fs/promises";
+import { mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { makeRepo } from "./fixtures";
 import { listWorktrees } from "../src/discover";
@@ -89,6 +89,24 @@ describe("cleanArtifacts", () => {
     expect(result.bytes).toBeGreaterThan(0);
     await fx.cleanup();
   });
+
+  test("refuses an artifact path equal to the worktree root", async () => {
+    const fx = await makeRepo();
+    const wt = await fx.addWorktree({ name: "alpha" });
+    const rows = await rowsFor(fx, "blocked");
+    // Not reachable through measure() — Row/Sizes are exported types, so a
+    // hand-built row can put the worktree root itself in sizes.artifacts.
+    // The guard must not depend on measure() never doing this.
+    const row = rows[0]!;
+    row.sizes.artifacts.push({ path: row.worktree.path, bytes: 0 });
+
+    const result = await cleanArtifacts(rows);
+    expect(result.deleted).not.toContain(row.worktree.path);
+    expect(result.failed.some((f) => f.path === row.worktree.path)).toBe(true);
+    expect(existsSync(wt)).toBe(true);
+    expect(existsSync(join(wt, "alpha.txt"))).toBe(true);
+    await fx.cleanup();
+  });
 });
 
 describe("pruneWorktrees", () => {
@@ -107,13 +125,41 @@ describe("pruneWorktrees", () => {
     await fx.cleanup();
   });
 
-  test("refuses to remove a row that is not safe", async () => {
+  test.each(["blocked", "caution"] as const)(
+    "refuses to remove a row that is not safe (%s)",
+    async (safety) => {
+      const fx = await makeRepo();
+      const wt = await fx.addWorktree({ name: "open" });
+      const rows = await rowsFor(fx, safety);
+      const result = await pruneWorktrees(rows);
+      expect(result.deleted).toHaveLength(0);
+      expect(existsSync(wt)).toBe(true);
+      await fx.cleanup();
+    },
+  );
+
+  test("refuses a worktree directory swapped for a symlink after plan time (TOCTOU)", async () => {
     const fx = await makeRepo();
-    const wt = await fx.addWorktree({ name: "open" });
-    const rows = await rowsFor(fx, "blocked");
+    const wt = await fx.addWorktree({ name: "done", merge: "squash", ageSeconds: 30 * DAY });
+    const rows = await rowsFor(fx, "safe");
+
+    // assertInsideWorktree alone can't catch this: `worktrees` always
+    // includes this very row, so its containment check degenerates to
+    // realpath(path) === realpath(path), true no matter what's there now.
+    const victim = join(dirname(fx.root), "victim");
+    await mkdir(victim, { recursive: true });
+    await writeFile(join(victim, "precious.txt"), "do not delete\n");
+    await rm(wt, { recursive: true, force: true });
+    await symlink(victim, wt);
+
     const result = await pruneWorktrees(rows);
     expect(result.deleted).toHaveLength(0);
-    expect(existsSync(wt)).toBe(true);
+    expect(result.failed).toHaveLength(1);
+    // Must be swarfkit's own guard refusing, not `git worktree remove`'s
+    // internal validation — assert on the message so a future change to
+    // git's own behaviour can't make this pass for the wrong reason.
+    expect(result.failed[0]?.error).toMatch(/not a real directory|symlink/i);
+    expect(existsSync(join(victim, "precious.txt"))).toBe(true);
     await fx.cleanup();
   });
 });
