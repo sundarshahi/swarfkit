@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { makeRepo } from "./fixtures";
 import { findRepos, listWorktrees } from "../src/discover";
 
+const DAY = 86_400;
+
 describe("listWorktrees", () => {
   test("returns the main worktree plus each added worktree", async () => {
     const fx = await makeRepo();
@@ -55,7 +57,12 @@ describe("findRepos", () => {
     const fx = await makeRepo();
     await mkdir(join(fx.root, "packages", "inner"), { recursive: true });
     const repos = await findRepos([fx.root]);
-    expect(repos).toContain(fx.root);
+    // repoRoot is now resolved via git (the main worktree per
+    // `git worktree list --porcelain`), which reports its own canonical
+    // form — canonicalize both sides here rather than in production code.
+    const expectedPath = await realpath(fx.root);
+    const canonicalRepos = await Promise.all(repos.map((r) => realpath(r).catch(() => r)));
+    expect(canonicalRepos).toContain(expectedPath);
     expect(repos.filter((r) => r.startsWith(join(fx.root, "packages")))).toHaveLength(0);
     await fx.cleanup();
   });
@@ -126,6 +133,68 @@ describe("findRepos", () => {
     expect(wts.length).toBeGreaterThan(0);
     // Should include the feature branch we pointed at
     expect(wts.some((w) => w.branch === "feature")).toBe(true);
+
+    await fx.cleanup();
+  });
+
+  test("repoRoot is always the main worktree, regardless of scan entry point", async () => {
+    const fx = await makeRepo();
+    const wtA = await fx.addWorktree({ name: "alpha" });
+    const mainPath = await realpath(fx.root);
+
+    // --root pointed at the repo itself
+    const reposAtRepo = await findRepos([fx.root]);
+    expect(reposAtRepo.length).toBe(1);
+    expect(await realpath(reposAtRepo[0]!)).toBe(mainPath);
+    const wtsAtRepo = await listWorktrees(reposAtRepo[0]!, fx.root);
+    expect(wtsAtRepo.length).toBeGreaterThan(0);
+    for (const w of wtsAtRepo) {
+      expect(await realpath(w.repoRoot)).toBe(mainPath);
+    }
+
+    // --root pointed directly at a linked worktree
+    const reposAtLinked = await findRepos([wtA]);
+    expect(reposAtLinked.length).toBe(1);
+    expect(await realpath(reposAtLinked[0]!)).toBe(mainPath);
+    const wtsAtLinked = await listWorktrees(reposAtLinked[0]!, fx.root);
+    expect(wtsAtLinked.length).toBeGreaterThan(0);
+    for (const w of wtsAtLinked) {
+      expect(await realpath(w.repoRoot)).toBe(mainPath);
+    }
+
+    await fx.cleanup();
+  });
+
+  test("prunes every safe linked worktree even when the alphabetically-first one would have become the canonical repoRoot", async () => {
+    const fx = await makeRepo();
+    // Names chosen so "aaa-alpha" sorts before "bbb-beta" — the order the old
+    // directory-walk-order logic would have picked as the (wrong) repoRoot.
+    const wtA = await fx.addWorktree({ name: "aaa-alpha", merge: "squash", ageSeconds: 30 * DAY });
+    const wtB = await fx.addWorktree({ name: "bbb-beta", merge: "squash", ageSeconds: 30 * DAY });
+
+    const { scan } = await import("../src/scan");
+    const { pruneWorktrees } = await import("../src/reclaim");
+    const { DEFAULT_MIN_AGE_SECONDS } = await import("../src/classify");
+
+    // Passing the two linked worktrees as separate roots, in this order, is
+    // what makes the walk visit "aaa-alpha" before the main worktree ever
+    // comes up — the exact condition that used to poison every row's
+    // repoRoot with the alphabetically-first worktree's own path.
+    const rows = await scan({
+      roots: [wtA, wtB],
+      cwd: fx.root,
+      minAgeSeconds: DEFAULT_MIN_AGE_SECONDS,
+    });
+
+    const targetRows = rows.filter(
+      (r) => r.worktree.branch === "aaa-alpha" || r.worktree.branch === "bbb-beta",
+    );
+    expect(targetRows).toHaveLength(2);
+    expect(targetRows.every((r) => r.verdict.safety === "safe")).toBe(true);
+
+    const result = await pruneWorktrees(rows);
+    expect(result.failed).toEqual([]);
+    expect(result.deleted).toHaveLength(2);
 
     await fx.cleanup();
   });

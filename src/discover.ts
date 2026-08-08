@@ -10,6 +10,29 @@ const SKIP_DIRS = new Set([
 ]);
 
 /**
+ * Resolve the path of a repository's main worktree via git itself, not via
+ * whichever directory the filesystem walk happened to visit first. The main
+ * worktree is always the first record of `git worktree list --porcelain`,
+ * and it is the one worktree `pruneWorktrees` can never remove (guarded by
+ * `isMain`), so — unlike a directory-walk-order pick — it can't vanish
+ * mid-run out from under a later `assertStillARealRegisteredWorktree` check.
+ *
+ * Returns null (never throws) so callers can fall back gracefully, same as
+ * every other git lookup in this module.
+ */
+async function resolveMainWorktreeRoot(dir: string): Promise<string | null> {
+  const out = await gitOut(dir, ["worktree", "list", "--porcelain"]);
+  if (out === null) return null;
+  for (const line of out.split("\n")) {
+    // Returned verbatim, as git reported it — production code never
+    // resolves/un-resolves paths (see repoRoot doc comment); that's a test-only
+    // concern (e.g. macOS /var vs /private/var).
+    if (line.startsWith("worktree ")) return line.slice(9);
+  }
+  return null;
+}
+
+/**
  * Walk each root looking for git repositories. A directory containing `.git`
  * is a repo and is not descended into — its worktrees come from git itself,
  * not from the filesystem.
@@ -38,10 +61,14 @@ export async function findRepos(roots: string[]): Promise<string[]> {
         const commonDir = await realpath(join(dir, commonDirOut)).catch(
           () => realpath(commonDirOut).catch(() => commonDirOut)
         );
-        // Prefer the main worktree (first encountered; git worktree list puts main first)
         if (!reposByCommonDir.has(commonDir)) {
-          reposByCommonDir.set(commonDir, dir);
-          found.push(dir);
+          // Canonical root is the MAIN worktree per git, never whichever
+          // directory this walk happened to reach first — directory order is
+          // filesystem-dependent (e.g. alphabetical on APFS) and has no
+          // relationship to git's own notion of which worktree is main.
+          const mainRoot = (await resolveMainWorktreeRoot(dir)) ?? dir;
+          reposByCommonDir.set(commonDir, mainRoot);
+          found.push(mainRoot);
         }
       }
       return;
