@@ -1,4 +1,4 @@
-import { readdir, lstat, realpath } from "node:fs/promises";
+import { readdir, realpath } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { gitOut } from "./git";
 import type { Worktree } from "./types";
@@ -54,17 +54,6 @@ function isInside(child: string, parent: string): boolean {
 }
 
 /**
- * Denormalize a realpath-resolved path back to its symlinked form for
- * compatibility. On macOS, /private/var is often exposed as /var in test
- * fixtures and user-facing code. Git's worktree list returns realpath-resolved
- * paths, but we need to return paths matching the symlink form to be consistent
- * with fixture expectations.
- */
-function denormalizePath(p: string): string {
-  return p.replace(/^\/private\/var\b/, "/var");
-}
-
-/**
  * Enumerate worktrees via `git worktree list --porcelain`. Records are
  * separated by blank lines; the first record is always the main worktree.
  */
@@ -72,25 +61,34 @@ export async function listWorktrees(repoRoot: string, cwd: string): Promise<Work
   const out = await gitOut(repoRoot, ["worktree", "list", "--porcelain"]);
   if (out === null) return [];
 
-  // Resolve cwd to handle symlinks in path comparisons
+  // Resolve cwd once to handle symlinks in path comparisons
   const resolvedCwd = await realpath(cwd).catch(() => cwd);
 
-  const rawWorktrees: Array<{path: string; branch: string | null; head: string}> = [];
+  const worktrees: Worktree[] = [];
   let path = "";
   let head = "";
   let branch: string | null = null;
 
-  const flush = () => {
+  const flush = async () => {
     if (!path) return;
-    rawWorktrees.push({path, branch, head});
+    // Resolve paths canonically for isCurrent comparisons only
+    const resolvedPath = await realpath(path).catch(() => path);
+    worktrees.push({
+      path,
+      branch,
+      head,
+      repoRoot,
+      isMain: worktrees.length === 0,
+      isCurrent: isInside(resolvedCwd, resolvedPath),
+    });
     path = "";
     head = "";
     branch = null;
   };
 
   for (const line of out.split("\n")) {
-    if (line === "") { flush(); continue; }
-    if (line.startsWith("worktree ")) { flush(); path = line.slice(9); continue; }
+    if (line === "") { await flush(); continue; }
+    if (line.startsWith("worktree ")) { await flush(); path = line.slice(9); continue; }
     if (line.startsWith("HEAD ")) { head = line.slice(5); continue; }
     if (line.startsWith("branch ")) {
       branch = line.slice(7).replace(/^refs\/heads\//, "");
@@ -98,23 +96,7 @@ export async function listWorktrees(repoRoot: string, cwd: string): Promise<Work
     }
     if (line === "detached") branch = null;
   }
-  flush();
-
-  // Build final worktrees with resolved paths for comparisons
-  const worktrees: Worktree[] = [];
-  for (let i = 0; i < rawWorktrees.length; i++) {
-    const raw = rawWorktrees[i];
-    const resolvedPath = await realpath(raw.path).catch(() => raw.path);
-
-    worktrees.push({
-      path: denormalizePath(raw.path),
-      branch: raw.branch,
-      head: raw.head,
-      repoRoot,
-      isMain: i === 0,
-      isCurrent: isInside(resolvedCwd, resolvedPath),
-    });
-  }
+  await flush();
 
   // `isCurrent` must mark only the innermost containing worktree — a nested
   // path would otherwise match its parent too.

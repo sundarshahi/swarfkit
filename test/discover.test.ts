@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir } from "node:fs/promises";
+import { mkdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { makeRepo } from "./fixtures";
 import { findRepos, listWorktrees } from "../src/discover";
@@ -14,7 +14,10 @@ describe("listWorktrees", () => {
     const main = wts.find((w) => w.isMain);
     expect(main?.branch).toBe("trunk");
     const alpha = wts.find((w) => w.branch === "alpha");
-    expect(alpha?.path).toBe(a);
+    // Resolve both paths canonically for comparison (handles /var vs /private/var)
+    const expectedPath = await realpath(a);
+    const actualPath = alpha?.path ? await realpath(alpha.path) : undefined;
+    expect(actualPath).toBe(expectedPath);
     expect(alpha?.isMain).toBe(false);
     await fx.cleanup();
   });
@@ -33,7 +36,15 @@ describe("listWorktrees", () => {
     const { git } = await import("../src/git");
     await git(a, ["checkout", "-q", "--detach"]);
     const wts = await listWorktrees(fx.root, fx.root);
-    expect(wts.find((w) => w.path === a)?.branch).toBeNull();
+    // Resolve both paths canonically for comparison (handles /var vs /private/var)
+    const expectedPath = await realpath(a);
+    for (const w of wts) {
+      const resolved = await realpath(w.path).catch(() => w.path);
+      if (resolved === expectedPath) {
+        expect(w.branch).toBeNull();
+        break;
+      }
+    }
     await fx.cleanup();
   });
 });
