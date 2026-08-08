@@ -13,10 +13,15 @@ const SKIP_DIRS = new Set([
  * Walk each root looking for git repositories. A directory containing `.git`
  * is a repo and is not descended into — its worktrees come from git itself,
  * not from the filesystem.
+ *
+ * Deduplicates by repository identity (git-common-dir), not filesystem path,
+ * to handle linked worktrees: a linked worktree has a `.git` FILE, and if both
+ * the main repo and its linked siblings are under the same scanned root, they
+ * would otherwise be discovered multiple times.
  */
 export async function findRepos(roots: string[]): Promise<string[]> {
   const found: string[] = [];
-  const seen = new Set<string>();
+  const reposByCommonDir = new Map<string, string>();
 
   async function walk(dir: string): Promise<void> {
     let entries;
@@ -27,10 +32,17 @@ export async function findRepos(roots: string[]): Promise<string[]> {
     }
 
     if (entries.some((e) => e.name === ".git")) {
-      const key = await realpath(dir).catch(() => dir);
-      if (!seen.has(key)) {
-        seen.add(key);
-        found.push(dir);
+      // Found a `.git` (file or directory). Deduplicate by the actual repository.
+      const commonDirOut = await gitOut(dir, ["rev-parse", "--git-common-dir"]);
+      if (commonDirOut !== null) {
+        const commonDir = await realpath(join(dir, commonDirOut)).catch(
+          () => realpath(commonDirOut).catch(() => commonDirOut)
+        );
+        // Prefer the main worktree (first encountered; git worktree list puts main first)
+        if (!reposByCommonDir.has(commonDir)) {
+          reposByCommonDir.set(commonDir, dir);
+          found.push(dir);
+        }
       }
       return;
     }
