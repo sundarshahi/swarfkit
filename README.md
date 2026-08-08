@@ -1,86 +1,118 @@
 # swarfkit
 
-Agent-driven development spins up a git worktree per task, sometimes several
-per day. Each one gets its own `node_modules`, its own build output, often its
-own Docker layer cache. Nothing removes any of it when the branch merges. Left
-alone this accumulates fast: one machine's own worktrees held 43 GB of build
-artifacts across 77 worktrees, plus another 31 GB of dead Docker build cache
-and images — roughly 78 GB reclaimed once someone went looking.
+Find and delete the disk space left behind by old git worktrees.
 
-`swarf` finds this mess, tells you which of it is safe to reclaim, and only
-then offers to delete it.
+If you use git worktrees a lot — especially with AI coding agents, which tend to
+make one per task — you end up with a lot of them. Each worktree is a full copy
+of your project. Each gets its own `node_modules` and its own build output.
+Nothing deletes any of it when the branch is merged.
+
+It adds up. On one machine: 43 GB of build files across 77 worktrees, plus
+31 GB of old Docker cache and images. About 78 GB in total.
+
+`swarf` shows you what is there, tells you what is safe to delete, and asks
+before deleting anything.
+
+## Install
+
+Run it without installing:
 
 ```bash
-npx swarfkit --root ~/dev/acme
+npx swarfkit --root ~/dev
 ```
 
-## What it does
+Or install it:
 
-The bare `swarf` command never deletes anything, under any flag or
-condition. It only prints a report. Deletion requires an explicit verb.
+```bash
+npm install -g swarfkit
+swarf --root ~/dev
+```
 
-| Command | Deletes |
+You need Node and `git` on your PATH. That is all. Built and tested on Node 22.
+
+## Usage
+
+Running `swarf` on its own only prints a report. It never deletes anything, no
+matter what flags you give it. To delete, you have to type a second word:
+
+| Command | What it deletes |
 | --- | --- |
-| `swarf` | nothing, ever |
-| `swarf clean` | build artifacts inside worktrees — `node_modules`, `.next`, `dist`, `build`, `.turbo` |
-| `swarf prune` | worktrees whose branch is merged, clean, pushed, and older than `--min-age` |
+| `swarf` | nothing |
+| `swarf clean` | build folders inside worktrees: `node_modules`, `.next`, `dist`, `build`, `.turbo` |
+| `swarf prune` | whole worktrees, but only ones it judges safe |
 
-Both `clean` and `prune` print the same report first, ask for confirmation
-(unless `--yes` is given), then re-scan immediately before touching disk so a
-worktree that changed state during the prompt is re-evaluated rather than
-deleted on stale information.
+`clean` is the safer of the two. Build folders can always be rebuilt, so it
+will remove them even from a worktree you are still working on.
 
-## Why not `git worktree prune`
+`prune` deletes the worktree itself, so it is much more careful. See the rules
+below.
 
-`git worktree prune` only removes a worktree's *registration* — the entry in
-`.git/worktrees` — and only once the worktree's directory is already gone. It
-never looks at whether the work shipped, never measures anything, and never
-reclaims a single byte on its own. Something else still has to notice the
-worktree is safe to remove, delete the directory, and only then does
-`git worktree prune` have anything to clean up after. `swarf` does the part
-that actually frees disk: it measures what each worktree costs and decides
-whether the work it holds has already shipped.
+Both commands show you the report, ask you to confirm, and then check
+everything again before deleting. If a worktree changed while you were reading
+the prompt, it gets re-checked and may be skipped.
 
-## How it decides
+### Example
 
-A worktree's verdict is `safe` only if all five rules hold. If every rule
-holds except the age rule, the verdict is `caution` instead of `blocked` —
-young but otherwise provably safe. If any other rule fails, or a rule
-couldn't be evaluated at all, the verdict is `blocked` and `swarf` never
-touches it.
+```
+$ swarf --root ~/dev
 
-1. **Not the main or current worktree.** The worktree you're standing in, and
-   the repository's primary checkout, are never candidates.
-2. **No uncommitted changes.** `git status --porcelain` must be empty.
-3. **Pushed.** An upstream must exist, and there must be nothing in
-   `HEAD` that isn't already on it.
-4. **Merged into the default branch, squash merges included.**
-5. **Old enough.** The last commit must be older than `--min-age` (default
-   `7d`).
+BRANCH               VERDICT  RECLAIM  REASON
+add-billing          safe      1.2 GB
+fix-login            safe    847.0 MB
+redesign-dashboard   caution 612.0 MB  younger than 7d
+wip-search           blocked 498.0 MB  has uncommitted changes
+main                 blocked   2.1 GB  is the main worktree
 
-Rule 4 is the one worth explaining. The obvious approach, `git branch
---merged`, tests whether a branch's commits are an *ancestor* of the target
-branch. That works for a fast-forward or a regular merge commit, but a squash
-merge rewrites the branch's commits into one new commit on the default
-branch — the original commits are never an ancestor of anything. Since squash
-merging is the default merge strategy on most hosted git platforms, ancestry
--based detection would classify almost every genuinely-merged branch as
-unmerged, which is exactly backwards. `swarf` instead uses `git cherry`,
-which compares *patch content* rather than commit identity — the same diff
-under a different commit hash still matches. That survives squash merges and
-most rebase-and-merge workflows.
+5 worktrees · 2 safe · 5.2 GB reclaimable
+```
 
-When a rule can't be evaluated at all — no default branch could be resolved,
-`git status` failed, the working tree is detached — the verdict is `blocked`,
-never `safe`. `swarf` fails toward keeping disk, not toward losing work.
+## When is a worktree safe to delete?
 
-### `--include-caution`
+All five of these must be true. If any one fails, `swarf` will not delete it.
 
-By default, `prune` only removes `safe` worktrees. Pass `--include-caution`
-to also remove `caution` worktrees — those that passed every rule except the
-age check. This does not loosen any of the other four rules; a worktree that
-is dirty, unpushed, unmerged, or unresolvable is still `blocked` and is never
-offered, `--include-caution` or not.
+1. **It is not your main worktree, and not the one you are currently in.**
+2. **It has no uncommitted changes.**
+3. **Everything is pushed.** It must have an upstream branch, and nothing on it
+   that has not been pushed.
+4. **Its branch is already merged** into the default branch. This includes
+   squash merges.
+5. **It is old enough** — the last commit is older than `--min-age`, which
+   defaults to 7 days.
+
+If the only rule that fails is the age rule, the verdict is `caution` instead
+of `blocked`. Those are skipped by default. Use `--include-caution` to delete
+them too. That flag only affects the age rule — a worktree that is dirty,
+unpushed, or unmerged stays blocked either way.
+
+If `swarf` cannot check a rule — say it cannot work out your default branch —
+it marks the worktree `blocked`. When it is unsure, it keeps your files.
+
+### Why squash merges matter
+
+The obvious way to check if a branch is merged is `git branch --merged`. It
+does not work here.
+
+`git branch --merged` checks whether your branch's commits are part of the
+history of the main branch. A squash merge does not keep those commits — it
+combines everything into one new commit. So after a squash merge, your branch
+looks unmerged even though all of its work has shipped.
+
+Most git hosting platforms use squash merge by default. So this method would
+mark almost every merged branch as unmerged, and `swarf` would never delete
+anything.
+
+Instead `swarf` uses `git cherry`, which compares the actual changes rather
+than the commit IDs. The same change under a different commit ID still counts
+as merged. This works with squash merges and with rebase merges.
+
+## Why not just use `git worktree prune`?
+
+`git worktree prune` does something different. It only removes the leftover
+*record* of a worktree, and only after you have already deleted the folder
+yourself. It does not check whether your work is merged, does not measure
+anything, and does not free any disk space on its own.
+
+`swarf` does the part that actually frees space.
 
 ## Options
 
@@ -103,6 +135,14 @@ Options:
 Exit codes: 0 success · 1 a deletion failed · 2 usage error or git not found
 ```
 
+Use `--json` if you want to script it. Use `--yes` to skip the prompt in CI.
+
 ## Exit codes
 
-`0` success · `1` a deletion failed · `2` usage error or `git` not found
+- `0` — worked
+- `1` — something could not be deleted
+- `2` — bad arguments, or `git` was not found
+
+## License
+
+MIT
