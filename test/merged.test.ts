@@ -44,4 +44,10 @@ describe("isMergedEquivalent", () => {
     expect(await isMergedEquivalent(fx.root, "trunk", "ghost")).toBe(false);
     await fx.cleanup();
   });
+
+  test("false, not a thrown rejection, when repoRoot does not exist", async () => {
+    await expect(
+      isMergedEquivalent("/no/such/dir/swarf-missing", "trunk", "anything"),
+    ).resolves.toBe(false);
+  });
 });

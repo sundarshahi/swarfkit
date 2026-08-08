@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 
 export class GitMissingError extends Error {
   constructor() {
@@ -25,26 +26,56 @@ export async function git(
   env?: Record<string, string>,
 ): Promise<GitResult> {
   return new Promise((resolve, reject) => {
-    execFile("git", args, {
-      cwd,
-      maxBuffer: 64 * 1024 * 1024,
-      windowsHide: true,
-      env: env ? { ...process.env, ...env } : process.env,
-    }, (error, stdout, stderr) => {
-      if (error) {
-        if (error.code === "ENOENT") {
-          reject(new GitMissingError());
-        } else {
-          resolve({
-            stdout: stdout || "",
-            stderr: stderr || "",
-            code: typeof error.code === "number" ? error.code : 1,
-          });
+    // Handles a spawn failure delivered either way execFile can deliver one:
+    // via the callback's `error` (Node's documented behaviour), or as a
+    // synchronous throw out of execFile() itself (Bun 1.0.29 does this for
+    // both a missing cwd and a missing executable — see the try/catch below).
+    const handleSpawnError = (
+      error: { code?: string | number; message?: string },
+      stdout: string,
+      stderr: string,
+    ) => {
+      if (error.code === "ENOENT") {
+        // execFile reports the identical ENOENT whether the git binary is
+        // missing or cwd doesn't exist. Only the former is fatal; the latter
+        // is a normal failed invocation like any other non-zero exit.
+        if (!existsSync(cwd)) {
+          resolve({ stdout: stdout || "", stderr: stderr || "", code: 1 });
+          return;
         }
-      } else {
-        resolve({ stdout, stderr, code: 0 });
+        reject(new GitMissingError());
+        return;
       }
-    });
+      // Bun 1.0.29 resolves the executable itself before spawning and throws
+      // this synchronously (instead of Node's async ENOENT) when it isn't on
+      // PATH. Treat it the same as a missing binary.
+      if (error.code === "ERR_INVALID_ARG_TYPE") {
+        reject(new GitMissingError());
+        return;
+      }
+      resolve({
+        stdout: stdout || "",
+        stderr: stderr || "",
+        code: typeof error.code === "number" ? error.code : 1,
+      });
+    };
+
+    try {
+      execFile("git", args, {
+        cwd,
+        maxBuffer: 64 * 1024 * 1024,
+        windowsHide: true,
+        env: env ? { ...process.env, ...env } : process.env,
+      }, (error, stdout, stderr) => {
+        if (error) {
+          handleSpawnError(error, stdout, stderr);
+        } else {
+          resolve({ stdout, stderr, code: 0 });
+        }
+      });
+    } catch (error) {
+      handleSpawnError(error as { code?: string | number; message?: string }, "", "");
+    }
   });
 }
 
