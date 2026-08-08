@@ -22,4 +22,15 @@ describe("makeRepo", () => {
     expect(wt.length).toBeGreaterThan(0);
     await fx.cleanup();
   });
+
+  test("addWorktree with ageSeconds backdates the commit's committer date", async () => {
+    const fx = await makeRepo();
+    const thirtyDays = 30 * 24 * 60 * 60;
+    const wt = await fx.addWorktree({ name: "old", ageSeconds: thirtyDays });
+    const ct = await gitOut(wt, ["log", "-1", "--format=%ct", "HEAD"]);
+    const seconds = Number(ct);
+    const ageNow = Date.now() / 1000 - seconds;
+    expect(ageNow).toBeGreaterThan(29 * 24 * 60 * 60);
+    await fx.cleanup();
+  });
 });

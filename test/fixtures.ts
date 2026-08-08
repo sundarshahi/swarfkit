@@ -34,12 +34,11 @@ const AUTHOR = [
 
 async function commit(cwd: string, message: string, ageSeconds = 0) {
   const when = new Date(Date.now() - ageSeconds * 1000).toISOString();
-  await git(cwd, [
-    ...AUTHOR,
-    "-c", `author.date=${when}`,
-    "-c", `committer.date=${when}`,
-    "commit", "-q", "--allow-empty", "-m", message,
-  ]);
+  await git(
+    cwd,
+    [...AUTHOR, "commit", "-q", "--allow-empty", "-m", message],
+    { GIT_AUTHOR_DATE: when, GIT_COMMITTER_DATE: when },
+  );
 }
 
 export async function makeRepo(): Promise<Fixture> {

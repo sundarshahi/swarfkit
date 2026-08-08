@@ -19,12 +19,17 @@ export type GitResult = { stdout: string; stderr: string; code: number };
  * Node.js's promisify.custom handler correctly returns {stdout, stderr} on success;
  * Bun's returns stdout only. This manual wrapper ensures compatibility with both.
  */
-export async function git(cwd: string, args: string[]): Promise<GitResult> {
+export async function git(
+  cwd: string,
+  args: string[],
+  env?: Record<string, string>,
+): Promise<GitResult> {
   return new Promise((resolve, reject) => {
     execFile("git", args, {
       cwd,
       maxBuffer: 64 * 1024 * 1024,
       windowsHide: true,
+      env: env ? { ...process.env, ...env } : process.env,
     }, (error, stdout, stderr) => {
       if (error) {
         if (error.code === "ENOENT") {
