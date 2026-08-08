@@ -245,6 +245,18 @@ describe("run", () => {
       expect(asked[0]).toContain("Delete 1 worktree to reclaim");
       await fx.cleanup();
     });
+
+    test("the clean prompt singularises a count of one build directory", async () => {
+      const fx = await makeRepo();
+      const wt = await fx.addWorktree({ name: "alpha" });
+      await fx.addArtifacts(wt, "node_modules", 1024);
+      const { io: i, asked } = io(fx.root, false);
+      await run(["clean", "--root", fx.root], i);
+      // Regression: naive "s$" stripping turned "build directories" into
+      // "build directorie" — singular and plural are now spelled out explicitly.
+      expect(asked[0]).toContain("Delete 1 build directory to reclaim");
+      await fx.cleanup();
+    });
   });
 
   describe("--json is honoured by clean and prune, not silently ignored", () => {

@@ -181,19 +181,21 @@ export async function run(argv: string[], io: Io): Promise<number> {
     // the artifact directories even from a safe row; `prune` removes the whole
     // tree even from a caution row. One shared "reclaimable" number was wrong
     // in both directions — measured 26x over for clean, 41x under for prune.
-    const [bytes, count, noun] =
+    const [bytes, count, singular, plural] =
       parsed.command === "clean"
         ? [
             candidates.reduce((sum, r) => sum + artifactBytes(r), 0),
             candidates.reduce((sum, r) => sum + r.sizes.artifacts.length, 0),
+            "build directory",
             "build directories",
           ]
         : [
             candidates.reduce((sum, r) => sum + treeBytes(r), 0),
             candidates.length,
+            "worktree",
             "worktrees",
           ];
-    const unit = count === 1 ? noun.replace(/s$/, "") : noun;
+    const unit = count === 1 ? singular : plural;
     const question = `\nDelete ${count} ${unit} to reclaim ${formatBytes(bytes)}? [y/N] `;
 
     if (!parsed.yes && !(await io.confirm(question))) {

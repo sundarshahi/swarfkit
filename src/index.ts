@@ -9,7 +9,9 @@ const code = await run(process.argv.slice(2), {
   confirm: async (question) => {
     // No TTY (piped or CI): never assume yes.
     if (!process.stdin.isTTY) return false;
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    // Prompt and readline's escape sequences go to stderr, not stdout, so
+    // `--json` output on stdout stays pure JSON even when interactive.
+    const rl = createInterface({ input: process.stdin, output: process.stderr });
     const answer = await rl.question(question);
     rl.close();
     return /^y(es)?$/i.test(answer.trim());

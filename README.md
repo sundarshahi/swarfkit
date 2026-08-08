@@ -132,6 +132,38 @@ anything, and does not free any disk space on its own.
 
 `swarf` does the part that actually frees space.
 
+## Known limitations
+
+**A conflict resolution that exists nowhere else can be missed.** The merge
+check above works by comparing changes, not by comparing commits — that is
+what lets it see through a squash merge. But there is one kind of commit it
+cannot see through: a merge commit made while resolving a conflict by hand.
+If a branch's only unique work is a fix made during that conflict resolution,
+and that fix was never made as its own separate commit anywhere, `swarf` will
+not find it. It will call the branch fully merged and safe to delete, taking
+that fix with it.
+
+This only happens if every other commit on the branch already shipped some
+other way — if there is any other unique commit left, `swarf` catches it as
+usual. So it is a narrow case. But it is real, and it is the one case where
+`swarf`'s rule of "when unsure, keep your files" does not protect you —
+`swarf` is not unsure here, it is simply wrong.
+
+Two things limit the damage. First, `swarf` only ever deletes a branch it
+believes is fully pushed, so in nearly every case that work still exists on
+your remote (GitHub, GitLab, wherever) even after `swarf` deletes your local
+copy of it. Second, you can always run plain `swarf` — no `clean` or `prune`
+— first and read the report before deleting anything.
+
+Two smaller, honest caveats:
+
+- If `swarf` cannot read a repository at all, it skips it silently instead of
+  telling you it couldn't check it.
+- While checking for squash merges, `swarf` writes one small git object into
+  each repository for every unmerged branch. `git gc` cleans these up on its
+  own since nothing else references them, but it means `swarf` is not
+  strictly read-only.
+
 ## Options
 
 ```
